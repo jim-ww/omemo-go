@@ -81,3 +81,10 @@ best-effort fan-out, key-transport messages) is implemented and covered by an en
   `DeviceList` and `EncryptedMessage` are plain Go structs, independent of any wire format.
 - A persistent `Store` implementation for production use (see `memstore` for a reference/testing
   implementation).
+
+## Support the Project
+
+**Monero (XMR)**
+```
+83YGRqP8uHed6NeegZQeX9ccCxbzoRHHEEi7pTwk4aqdJZEVXXA6NWtetnsEM2v33zFBBt3Rp6DNhU9qhJEGPspU14yN8t7
+```
