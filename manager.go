@@ -246,25 +246,58 @@ func (m *Manager) devicesFor(ctx context.Context, jid string) ([]DeviceID, error
 	return m.store.Devices(ctx, jid)
 }
 
-// EncryptMessage encrypts plaintext for every known device of jid, creating
-// sessions as needed. It is best-effort: a failure for one recipient device
-// does not prevent encrypting for the others. The returned error is non-nil
-// only if no recipient could be encrypted for at all; per-device failures
-// are always reported in the returned slice.
+// EncryptMessage encrypts plaintext for every known device of jid, plus every
+// other known device of the local account (so the sender's own other
+// clients, e.g. a phone, can decrypt messages sent from this device),
+// creating sessions as needed. It is best-effort: a failure for one
+// recipient device does not prevent encrypting for the others. The returned
+// error is non-nil only if no recipient could be encrypted for at all;
+// per-device failures are always reported in the returned slice.
 func (m *Manager) EncryptMessage(ctx context.Context, jid string, plaintext []byte) (*EncryptedMessage, []DeviceError, error) {
 	return m.encrypt(ctx, jid, plaintext)
 }
 
 // EncryptKeyTransport builds a key-transport message: it establishes or
-// refreshes sessions with every known device of jid, carrying no message
-// body. Applications typically send this proactively to warm sessions ahead
-// of an actual message, or to recover from a broken session.
+// refreshes sessions with every known device of jid (and the local
+// account's other devices), carrying no message body. Applications
+// typically send this proactively to warm sessions ahead of an actual
+// message, or to recover from a broken session.
 func (m *Manager) EncryptKeyTransport(ctx context.Context, jid string) (*EncryptedMessage, []DeviceError, error) {
 	return m.encrypt(ctx, jid, nil)
 }
 
-func (m *Manager) encrypt(ctx context.Context, jid string, plaintext []byte) (*EncryptedMessage, []DeviceError, error) {
+// recipientDevices returns jid's known devices, plus - unless jid is
+// already the local account's own bare JID - the local account's other
+// known devices, so a sent message can be decrypted by the sender's own
+// other clients too.
+func (m *Manager) recipientDevices(ctx context.Context, jid string) ([]Device, error) {
 	deviceIDs, err := m.devicesFor(ctx, jid)
+	if err != nil {
+		return nil, err
+	}
+	devices := make([]Device, 0, len(deviceIDs)+1)
+	for _, id := range deviceIDs {
+		devices = append(devices, Device{JID: jid, ID: id})
+	}
+
+	if jid == m.localDevice.JID {
+		return devices, nil
+	}
+	// Best-effort: not knowing our own other devices shouldn't block sending
+	// to the actual recipient, so a fetch failure here is silently ignored
+	// rather than propagated.
+	ownIDs, err := m.devicesFor(ctx, m.localDevice.JID)
+	if err != nil {
+		return devices, nil
+	}
+	for _, id := range ownIDs {
+		devices = append(devices, Device{JID: m.localDevice.JID, ID: id})
+	}
+	return devices, nil
+}
+
+func (m *Manager) encrypt(ctx context.Context, jid string, plaintext []byte) (*EncryptedMessage, []DeviceError, error) {
+	devices, err := m.recipientDevices(ctx, jid)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -281,8 +314,7 @@ func (m *Manager) encrypt(ctx context.Context, jid string, plaintext []byte) (*E
 	msg := &EncryptedMessage{Sender: m.localDevice, Payload: ciphertext, IV: iv}
 	var deviceErrs []DeviceError
 
-	for _, id := range deviceIDs {
-		dev := Device{JID: jid, ID: id}
+	for _, dev := range devices {
 		if dev == m.localDevice {
 			continue
 		}
