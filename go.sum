@@ -1,2 +1,4 @@
 filippo.io/edwards25519 v1.2.0 h1:crnVqOiS4jqYleHd9vaKZ+HKtHfllngJIiOpNpoJsjo=
 filippo.io/edwards25519 v1.2.0/go.mod h1:xzAOLCNug/yB62zG1bQ8uziwrIqIuxhctzJT18Q77mc=
+github.com/jim-ww/xochimilco v0.0.0-20260805123812-e10aed621610 h1:ZSdCBiS4BdBg8VKxol24BNhLp4C/DyT5s03ybye8KuA=
+github.com/jim-ww/xochimilco v0.0.0-20260805123812-e10aed621610/go.mod h1:Xs6/H60D4Q/fxJ78DnUz4pexjfFAWRVzzVCpW3ncIhw=
