@@ -2,7 +2,6 @@ package omemo_test
 
 import (
 	"context"
-	"crypto/ed25519"
 	"errors"
 	"sync"
 	"testing"
@@ -62,18 +61,22 @@ func (t fakeTransport) PublishBundle(_ context.Context, bundle omemo.Bundle) err
 	return nil
 }
 
-// setup creates a Manager for jid/deviceID sharing net, with all recipient
-// devices auto-trusted so tests can focus on the encrypt/decrypt flow.
-func setup(t *testing.T, ctx context.Context, net *fakeNetwork, jid string, deviceID omemo.DeviceID) *omemo.Manager {
+// protocols is every omemo.Protocol this test file exercises.
+var protocols = []omemo.Protocol{omemo.ProtocolV2, omemo.ProtocolV1}
+
+// setup creates a Manager for jid/deviceID speaking protocol, sharing net,
+// with all recipient devices auto-trusted so tests can focus on the
+// encrypt/decrypt flow.
+func setup(t *testing.T, ctx context.Context, net *fakeNetwork, jid string, deviceID omemo.DeviceID, protocol omemo.Protocol) *omemo.Manager {
 	t.Helper()
 
 	store := memstore.New()
-	if err := omemo.InitIdentity(ctx, store, jid, deviceID); err != nil {
+	if err := omemo.InitIdentity(ctx, store, jid, deviceID, protocol); err != nil {
 		t.Fatalf("InitIdentity: %v", err)
 	}
 
-	mgr, err := omemo.NewManager(ctx, store, fakeTransport{net: net}, omemo.WithTrustResolver(
-		func(context.Context, omemo.Device, ed25519.PublicKey) error { return nil },
+	mgr, err := omemo.NewManager(ctx, store, fakeTransport{net: net}, protocol, omemo.WithTrustResolver(
+		func(context.Context, omemo.Device, []byte) error { return nil },
 	))
 	if err != nil {
 		t.Fatalf("NewManager: %v", err)
@@ -90,11 +93,17 @@ func setup(t *testing.T, ctx context.Context, net *fakeNetwork, jid string, devi
 }
 
 func TestEndToEndConversation(t *testing.T) {
+	for _, protocol := range protocols {
+		t.Run(protocol.String(), func(t *testing.T) { testEndToEndConversation(t, protocol) })
+	}
+}
+
+func testEndToEndConversation(t *testing.T, protocol omemo.Protocol) {
 	ctx := context.Background()
 	net := newFakeNetwork()
 
-	alice := setup(t, ctx, net, "alice@example.com", 1)
-	bob := setup(t, ctx, net, "bob@example.com", 1)
+	alice := setup(t, ctx, net, "alice@example.com", 1, protocol)
+	bob := setup(t, ctx, net, "bob@example.com", 1, protocol)
 
 	// Alice's first message to Bob establishes a new session.
 	msg, devErrs, err := alice.EncryptMessage(ctx, "bob@example.com", []byte("hello bob"))
@@ -143,11 +152,17 @@ func TestEndToEndConversation(t *testing.T) {
 }
 
 func TestKeyTransport(t *testing.T) {
+	for _, protocol := range protocols {
+		t.Run(protocol.String(), func(t *testing.T) { testKeyTransport(t, protocol) })
+	}
+}
+
+func testKeyTransport(t *testing.T, protocol omemo.Protocol) {
 	ctx := context.Background()
 	net := newFakeNetwork()
 
-	alice := setup(t, ctx, net, "alice@example.com", 1)
-	bob := setup(t, ctx, net, "bob@example.com", 1)
+	alice := setup(t, ctx, net, "alice@example.com", 1, protocol)
+	bob := setup(t, ctx, net, "bob@example.com", 1, protocol)
 
 	msg, devErrs, err := alice.EncryptKeyTransport(ctx, "bob@example.com")
 	if err != nil {
@@ -170,15 +185,21 @@ func TestKeyTransport(t *testing.T) {
 }
 
 func TestUntrustedDeviceIsSkipped(t *testing.T) {
+	for _, protocol := range protocols {
+		t.Run(protocol.String(), func(t *testing.T) { testUntrustedDeviceIsSkipped(t, protocol) })
+	}
+}
+
+func testUntrustedDeviceIsSkipped(t *testing.T, protocol omemo.Protocol) {
 	ctx := context.Background()
 	net := newFakeNetwork()
 
 	store := memstore.New()
-	if err := omemo.InitIdentity(ctx, store, "alice@example.com", 1); err != nil {
+	if err := omemo.InitIdentity(ctx, store, "alice@example.com", 1, protocol); err != nil {
 		t.Fatalf("InitIdentity: %v", err)
 	}
 	// No TrustResolver configured: any undecided device must be refused.
-	alice, err := omemo.NewManager(ctx, store, fakeTransport{net: net})
+	alice, err := omemo.NewManager(ctx, store, fakeTransport{net: net}, protocol)
 	if err != nil {
 		t.Fatalf("NewManager: %v", err)
 	}
@@ -186,7 +207,7 @@ func TestUntrustedDeviceIsSkipped(t *testing.T) {
 		t.Fatalf("PublishBundle: %v", err)
 	}
 
-	bob := setup(t, ctx, net, "bob@example.com", 1)
+	bob := setup(t, ctx, net, "bob@example.com", 1, protocol)
 	_ = bob
 
 	_, devErrs, err := alice.EncryptMessage(ctx, "bob@example.com", []byte("hi"))

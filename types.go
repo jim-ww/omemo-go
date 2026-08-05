@@ -5,7 +5,33 @@
 // happen - it never implements cryptography itself.
 package omemo
 
-import "crypto/ed25519"
+// Protocol distinguishes the two OMEMO wire protocols this library can
+// speak. They share the Double Ratchet and X3DH DH-chain machinery but
+// differ in identity key type, payload cipher, and wire format - see
+// internal/signal for how each is dispatched.
+type Protocol int
+
+const (
+	// ProtocolV2 is XEP-0384 (OMEMO 2, urn:xmpp:omemo:2). Identity keys are
+	// Ed25519.
+	ProtocolV2 Protocol = iota
+
+	// ProtocolV1 is legacy, pre-standardization OMEMO
+	// (eu.siacs.conversations.axolotl). Identity keys are native Curve25519,
+	// signed via XEdDSA.
+	ProtocolV1
+)
+
+func (p Protocol) String() string {
+	switch p {
+	case ProtocolV1:
+		return "v1"
+	case ProtocolV2:
+		return "v2"
+	default:
+		return "unknown"
+	}
+}
 
 // DeviceID identifies a single OMEMO device belonging to some JID.
 type DeviceID uint32
@@ -34,8 +60,11 @@ type PreKey struct {
 // Bundle is a device's published X3DH key material, as fetched from or
 // published to whatever transport (e.g. XMPP PEP) the application provides.
 type Bundle struct {
-	Device       Device
-	IdentityKey  ed25519.PublicKey
+	Device Device
+
+	// IdentityKey is the device's public identity key: 32-byte Ed25519 for
+	// ProtocolV2, 32-byte Curve25519 for ProtocolV1.
+	IdentityKey  []byte
 	SignedPreKey SignedPreKey
 
 	// PreKeys is the pool a bundle publisher offers; a consumer establishing

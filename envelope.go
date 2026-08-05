@@ -1,12 +1,12 @@
 package omemo
 
-import "crypto/ed25519"
-
 // KeyExchange carries the X3DH parameters needed to establish a new session.
 // It is present on a RecipientKey only for the first message sent to a device
 // under a given session (an OMEMOKeyExchange in XEP-0384 terms).
 type KeyExchange struct {
-	IdentityKey    ed25519.PublicKey
+	// IdentityKey is the sender's public identity key: Ed25519 for
+	// ProtocolV2, Curve25519 for ProtocolV1.
+	IdentityKey    []byte
 	EphemeralKey   []byte
 	SignedPreKeyID uint32
 	PreKeyID       uint32
@@ -32,4 +32,10 @@ type EncryptedMessage struct {
 	Sender  Device
 	Keys    []RecipientKey
 	Payload []byte
+
+	// IV is the payload's initialization vector. It is only set for
+	// ProtocolV1 messages carrying a Payload: legacy OMEMO's payload cipher
+	// (unlike ProtocolV2's) uses an explicit, non-secret IV sent in the
+	// clear rather than one derived from key material inside the ratchet.
+	IV []byte
 }

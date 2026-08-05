@@ -2,7 +2,6 @@ package omemo
 
 import (
 	"context"
-	"crypto/ed25519"
 )
 
 // SignedPreKeyRecord is a signed prekey together with its private half, as
@@ -23,9 +22,14 @@ type PreKeyRecord struct {
 }
 
 // IdentityStore persists this device's own long-term identity.
+//
+// The private key's format depends on the protocol a given Store instance is
+// scoped to (a Manager is scoped to exactly one Protocol - see NewManager):
+// a 64-byte Ed25519 seed+public key (crypto/ed25519.PrivateKey's format) for
+// ProtocolV2, or a 32-byte raw Curve25519 scalar for ProtocolV1.
 type IdentityStore interface {
-	IdentityKeyPair(ctx context.Context) (ed25519.PrivateKey, error)
-	SetIdentityKeyPair(ctx context.Context, priv ed25519.PrivateKey) error
+	IdentityKeyPair(ctx context.Context) ([]byte, error)
+	SetIdentityKeyPair(ctx context.Context, priv []byte) error
 
 	LocalDevice(ctx context.Context) (Device, error)
 	SetLocalDevice(ctx context.Context, dev Device) error
@@ -69,10 +73,13 @@ type SessionStore interface {
 
 // TrustStore persists trust decisions. Trust is bound to an identity key
 // (its fingerprint) rather than a Device, since that key - not the device ID
-// - is OMEMO's actual security anchor.
+// - is OMEMO's actual security anchor. identityKey bytes differ by protocol
+// (see IdentityStore) but never collide across protocols since Ed25519 and
+// Curve25519 keys occupy the same 32-byte space with effectively disjoint
+// values, and callers additionally scope Store instances per protocol.
 type TrustStore interface {
-	Trust(ctx context.Context, identityKey ed25519.PublicKey) (TrustState, error)
-	SetTrust(ctx context.Context, identityKey ed25519.PublicKey, state TrustState) error
+	Trust(ctx context.Context, identityKey []byte) (TrustState, error)
+	SetTrust(ctx context.Context, identityKey []byte, state TrustState) error
 }
 
 // DeviceStore persists known device lists (own and contacts') and the
@@ -81,8 +88,8 @@ type DeviceStore interface {
 	Devices(ctx context.Context, jid string) ([]DeviceID, error)
 	SetDevices(ctx context.Context, jid string, devices []DeviceID) error
 
-	RemoteIdentityKey(ctx context.Context, dev Device) (key ed25519.PublicKey, ok bool, err error)
-	PutRemoteIdentityKey(ctx context.Context, dev Device, key ed25519.PublicKey) error
+	RemoteIdentityKey(ctx context.Context, dev Device) (key []byte, ok bool, err error)
+	PutRemoteIdentityKey(ctx context.Context, dev Device, key []byte) error
 }
 
 // Store aggregates all persistence this library needs. Implementations may

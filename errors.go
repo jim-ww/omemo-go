@@ -2,7 +2,6 @@ package omemo
 
 import (
 	"context"
-	"crypto/ed25519"
 	"errors"
 	"fmt"
 )
@@ -32,7 +31,7 @@ var ErrOwnDeviceKeyMissing = errors.New("omemo: message has no key for this devi
 // Returning nil trusts the device for this call and persists that decision;
 // returning an error skips the device for this call without persisting
 // anything, leaving it TrustUndecided for future calls.
-type TrustResolver func(ctx context.Context, dev Device, identityKey ed25519.PublicKey) error
+type TrustResolver func(ctx context.Context, dev Device, identityKey []byte) error
 
 // DeviceError reports a per-recipient-device failure during a best-effort
 // multi-device operation such as EncryptMessage.

@@ -2,7 +2,6 @@ package omemo
 
 import (
 	"context"
-	"crypto/ed25519"
 	"fmt"
 	"sync"
 
@@ -27,8 +26,9 @@ const MinPreKeyCount = 25
 type Manager struct {
 	store     Store
 	transport Transport
+	protocol  Protocol
 
-	identityKey ed25519.PrivateKey
+	identityKey []byte
 	localDevice Device
 
 	trustResolver TrustResolver
@@ -48,8 +48,13 @@ func WithTrustResolver(r TrustResolver) Option {
 }
 
 // NewManager loads this device's identity from store and returns a ready
-// Manager. Call InitIdentity first if this is a fresh Store.
-func NewManager(ctx context.Context, store Store, transport Transport, opts ...Option) (*Manager, error) {
+// Manager for protocol. Call InitIdentity first if this is a fresh Store.
+//
+// protocol MUST match whatever protocol InitIdentity was called with for
+// store - a Store is expected to be scoped to exactly one protocol (an
+// account speaking both maintains two separate Store instances, one per
+// protocol, each its own device identity and prekey pool).
+func NewManager(ctx context.Context, store Store, transport Transport, protocol Protocol, opts ...Option) (*Manager, error) {
 	idKey, err := store.IdentityKeyPair(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("load identity key: %w", err)
@@ -62,6 +67,7 @@ func NewManager(ctx context.Context, store Store, transport Transport, opts ...O
 	m := &Manager{
 		store:       store,
 		transport:   transport,
+		protocol:    protocol,
 		identityKey: idKey,
 		localDevice: dev,
 		locks:       make(map[Device]*sync.Mutex),
@@ -74,9 +80,10 @@ func NewManager(ctx context.Context, store Store, transport Transport, opts ...O
 
 // InitIdentity generates a fresh identity key pair and device ID and stores
 // them, along with an initial signed prekey and one-time prekey pool. It
-// MUST be called exactly once for a new Store, before NewManager.
-func InitIdentity(ctx context.Context, store Store, jid string, deviceID DeviceID) error {
-	idKey, err := signal.GenerateIdentityKey()
+// MUST be called exactly once for a new Store, before NewManager, with the
+// same protocol NewManager will later be called with.
+func InitIdentity(ctx context.Context, store Store, jid string, deviceID DeviceID, protocol Protocol) error {
+	idKey, err := signal.GenerateIdentityKey(signal.Protocol(protocol))
 	if err != nil {
 		return fmt.Errorf("generate identity key: %w", err)
 	}
@@ -87,7 +94,7 @@ func InitIdentity(ctx context.Context, store Store, jid string, deviceID DeviceI
 		return fmt.Errorf("store local device: %w", err)
 	}
 
-	spkPub, spkPriv, spkSig, err := signal.GenerateSignedPreKey(idKey)
+	spkPub, spkPriv, spkSig, err := signal.GenerateSignedPreKey(signal.Protocol(protocol), idKey)
 	if err != nil {
 		return fmt.Errorf("generate signed prekey: %w", err)
 	}
@@ -130,9 +137,14 @@ func (m *Manager) Bundle(ctx context.Context) (Bundle, error) {
 		preKeys[i] = PreKey{ID: r.ID, Public: r.Public}
 	}
 
+	pub, err := signal.IdentityPublicKey(signal.Protocol(m.protocol), m.identityKey)
+	if err != nil {
+		return Bundle{}, fmt.Errorf("derive identity public key: %w", err)
+	}
+
 	return Bundle{
 		Device:      m.localDevice,
-		IdentityKey: m.identityKey.Public().(ed25519.PublicKey),
+		IdentityKey: pub,
 		SignedPreKey: SignedPreKey{
 			ID:        spk.ID,
 			Public:    spk.Public,
@@ -160,7 +172,7 @@ func (m *Manager) RotateSignedPreKey(ctx context.Context) error {
 		return err
 	}
 
-	spkPub, spkPriv, spkSig, err := signal.GenerateSignedPreKey(m.identityKey)
+	spkPub, spkPriv, spkSig, err := signal.GenerateSignedPreKey(signal.Protocol(m.protocol), m.identityKey)
 	if err != nil {
 		return fmt.Errorf("generate signed prekey: %w", err)
 	}
@@ -257,15 +269,16 @@ func (m *Manager) encrypt(ctx context.Context, jid string, plaintext []byte) (*E
 		return nil, nil, err
 	}
 
-	keyMaterial, ciphertext, err := signal.EncryptPayload(plaintext)
+	keyMaterial, iv, ciphertext, err := signal.EncryptPayload(signal.Protocol(m.protocol), plaintext)
 	if err != nil {
 		return nil, nil, fmt.Errorf("encrypt payload: %w", err)
 	}
 	if plaintext == nil {
 		ciphertext = nil
+		iv = nil
 	}
 
-	msg := &EncryptedMessage{Sender: m.localDevice, Payload: ciphertext}
+	msg := &EncryptedMessage{Sender: m.localDevice, Payload: ciphertext, IV: iv}
 	var deviceErrs []DeviceError
 
 	for _, id := range deviceIDs {
@@ -323,7 +336,7 @@ func (m *Manager) encryptForDevice(ctx context.Context, dev Device, keyMaterial 
 // checkTrust enforces the trust decision for identityKey, consulting the
 // configured TrustResolver for an undecided device and persisting the
 // outcome. Caller MUST hold dev's device lock.
-func (m *Manager) checkTrust(ctx context.Context, dev Device, identityKey ed25519.PublicKey) error {
+func (m *Manager) checkTrust(ctx context.Context, dev Device, identityKey []byte) error {
 	state, err := m.store.Trust(ctx, identityKey)
 	if err != nil {
 		return fmt.Errorf("load trust state: %w", err)
@@ -353,7 +366,7 @@ func (m *Manager) getOrCreateActiveSession(ctx context.Context, dev Device) (ses
 	if data, ok, err := m.store.Session(ctx, dev); err != nil {
 		return nil, nil, fmt.Errorf("load session: %w", err)
 	} else if ok {
-		sess, err := signal.LoadSession(data)
+		sess, err := signal.LoadSession(signal.Protocol(m.protocol), data)
 		return sess, nil, err
 	}
 
@@ -366,7 +379,10 @@ func (m *Manager) getOrCreateActiveSession(ctx context.Context, dev Device) (ses
 	}
 	preKey := bundle.PreKeys[0]
 
-	sess, ekPub, err := signal.NewActiveSession(m.identityKey, bundle.IdentityKey, bundle.SignedPreKey.Public, bundle.SignedPreKey.Signature, preKey.Public)
+	sess, ekPub, err := signal.NewActiveSession(
+		signal.Protocol(m.protocol), m.identityKey, bundle.IdentityKey, bundle.SignedPreKey.Public, bundle.SignedPreKey.Signature, preKey.Public,
+		bundle.SignedPreKey.ID, preKey.ID, uint32(m.localDevice.ID),
+	)
 	if err != nil {
 		return nil, nil, fmt.Errorf("X3DH: %w", err)
 	}
@@ -375,8 +391,13 @@ func (m *Manager) getOrCreateActiveSession(ctx context.Context, dev Device) (ses
 		return nil, nil, fmt.Errorf("store identity key: %w", err)
 	}
 
+	ownPub, err := signal.IdentityPublicKey(signal.Protocol(m.protocol), m.identityKey)
+	if err != nil {
+		return nil, nil, fmt.Errorf("derive identity public key: %w", err)
+	}
+
 	return sess, &KeyExchange{
-		IdentityKey:    m.identityKey.Public().(ed25519.PublicKey),
+		IdentityKey:    ownPub,
 		EphemeralKey:   ekPub,
 		SignedPreKeyID: bundle.SignedPreKey.ID,
 		PreKeyID:       preKey.ID,
@@ -415,12 +436,12 @@ func (m *Manager) DecryptMessage(ctx context.Context, msg *EncryptedMessage) ([]
 	lock.Lock()
 	defer lock.Unlock()
 
-	sess, err := m.getOrCreateSessionForIncoming(ctx, msg.Sender, key.KeyExchange)
+	sess, dataToDecrypt, err := m.getOrCreateSessionForIncoming(ctx, msg.Sender, key)
 	if err != nil {
 		return nil, fmt.Errorf("establish session: %w", err)
 	}
 
-	keyMaterial, err := sess.Decrypt(key.Data)
+	keyMaterial, err := sess.Decrypt(dataToDecrypt)
 	if err != nil {
 		return nil, fmt.Errorf("ratchet decrypt: %w", err)
 	}
@@ -431,43 +452,73 @@ func (m *Manager) DecryptMessage(ctx context.Context, msg *EncryptedMessage) ([]
 	if msg.Payload == nil {
 		return nil, nil
 	}
-	plaintext, err := signal.DecryptPayload(keyMaterial, msg.Payload)
+	plaintext, err := signal.DecryptPayload(signal.Protocol(m.protocol), keyMaterial, msg.IV, msg.Payload)
 	if err != nil {
 		return nil, fmt.Errorf("decrypt payload: %w", err)
 	}
 	return plaintext, nil
 }
 
-func (m *Manager) getOrCreateSessionForIncoming(ctx context.Context, sender Device, kx *KeyExchange) (*signal.Session, error) {
-	if kx == nil {
+// getOrCreateSessionForIncoming returns a session ready to decrypt key.Data
+// (or, for ProtocolV1 first messages, the bytes actually returned as
+// dataToDecrypt - the embedded WhisperMessage, not the outer
+// PreKeyWhisperMessage envelope key.Data itself is).
+func (m *Manager) getOrCreateSessionForIncoming(ctx context.Context, sender Device, key *RecipientKey) (sess *signal.Session, dataToDecrypt []byte, err error) {
+	if key.KeyExchange == nil {
 		data, ok, err := m.store.Session(ctx, sender)
 		if err != nil {
-			return nil, fmt.Errorf("load session: %w", err)
+			return nil, nil, fmt.Errorf("load session: %w", err)
 		}
 		if !ok {
-			return nil, ErrUnknownSession
+			return nil, nil, ErrUnknownSession
 		}
-		return signal.LoadSession(data)
+		sess, err = signal.LoadSession(signal.Protocol(m.protocol), data)
+		return sess, key.Data, err
 	}
 
+	if m.protocol == ProtocolV1 {
+		signedPreKeyID, preKeyID, err := signal.PeekLegacyPreKeyIDs(key.Data)
+		if err != nil {
+			return nil, nil, fmt.Errorf("parsing legacy prekey message: %w", err)
+		}
+		spk, err := m.signedPreKeyByID(ctx, signedPreKeyID)
+		if err != nil {
+			return nil, nil, err
+		}
+		preKey, err := m.store.ConsumePreKey(ctx, preKeyID)
+		if err != nil {
+			return nil, nil, fmt.Errorf("consume one-time prekey %d: %w", preKeyID, err)
+		}
+
+		sess, peerIdentityKey, innerData, err := signal.NewPassiveSessionFromPreKeyBlob(m.identityKey, spk.Public, spk.Private, preKey.Private, key.Data)
+		if err != nil {
+			return nil, nil, fmt.Errorf("X3DH: %w", err)
+		}
+		if err := m.store.PutRemoteIdentityKey(ctx, sender, peerIdentityKey); err != nil {
+			return nil, nil, fmt.Errorf("store identity key: %w", err)
+		}
+		return sess, innerData, nil
+	}
+
+	kx := key.KeyExchange
 	spk, err := m.signedPreKeyByID(ctx, kx.SignedPreKeyID)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	preKey, err := m.store.ConsumePreKey(ctx, kx.PreKeyID)
 	if err != nil {
-		return nil, fmt.Errorf("consume one-time prekey %d: %w", kx.PreKeyID, err)
+		return nil, nil, fmt.Errorf("consume one-time prekey %d: %w", kx.PreKeyID, err)
 	}
 
-	sess, err := signal.NewPassiveSession(m.identityKey, kx.IdentityKey, spk.Public, spk.Private, preKey.Private, kx.EphemeralKey)
+	sess, err = signal.NewPassiveSession(m.identityKey, kx.IdentityKey, spk.Public, spk.Private, preKey.Private, kx.EphemeralKey)
 	if err != nil {
-		return nil, fmt.Errorf("X3DH: %w", err)
+		return nil, nil, fmt.Errorf("X3DH: %w", err)
 	}
 
 	if err := m.store.PutRemoteIdentityKey(ctx, sender, kx.IdentityKey); err != nil {
-		return nil, fmt.Errorf("store identity key: %w", err)
+		return nil, nil, fmt.Errorf("store identity key: %w", err)
 	}
-	return sess, nil
+	return sess, key.Data, nil
 }
 
 func (m *Manager) signedPreKeyByID(ctx context.Context, id uint32) (SignedPreKeyRecord, error) {

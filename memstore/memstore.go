@@ -4,7 +4,7 @@ package memstore
 
 import (
 	"context"
-	"crypto/ed25519"
+
 	"fmt"
 	"sync"
 
@@ -15,7 +15,7 @@ import (
 type Store struct {
 	mu sync.Mutex
 
-	identityKey ed25519.PrivateKey
+	identityKey []byte
 	localDevice omemo.Device
 
 	currentSPK   omemo.SignedPreKeyRecord
@@ -26,7 +26,7 @@ type Store struct {
 	sessions map[omemo.Device][]byte
 	trust    map[string]omemo.TrustState // keyed by identity key bytes
 	devices  map[string][]omemo.DeviceID
-	remoteID map[omemo.Device]ed25519.PublicKey
+	remoteID map[omemo.Device][]byte
 }
 
 // New returns an empty Store.
@@ -36,17 +36,17 @@ func New() *Store {
 		sessions: make(map[omemo.Device][]byte),
 		trust:    make(map[string]omemo.TrustState),
 		devices:  make(map[string][]omemo.DeviceID),
-		remoteID: make(map[omemo.Device]ed25519.PublicKey),
+		remoteID: make(map[omemo.Device][]byte),
 	}
 }
 
-func (s *Store) IdentityKeyPair(context.Context) (ed25519.PrivateKey, error) {
+func (s *Store) IdentityKeyPair(context.Context) ([]byte, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.identityKey, nil
 }
 
-func (s *Store) SetIdentityKeyPair(_ context.Context, priv ed25519.PrivateKey) error {
+func (s *Store) SetIdentityKeyPair(_ context.Context, priv []byte) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.identityKey = priv
@@ -156,13 +156,13 @@ func (s *Store) DeleteSession(_ context.Context, dev omemo.Device) error {
 	return nil
 }
 
-func (s *Store) Trust(_ context.Context, identityKey ed25519.PublicKey) (omemo.TrustState, error) {
+func (s *Store) Trust(_ context.Context, identityKey []byte) (omemo.TrustState, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.trust[string(identityKey)], nil
 }
 
-func (s *Store) SetTrust(_ context.Context, identityKey ed25519.PublicKey, state omemo.TrustState) error {
+func (s *Store) SetTrust(_ context.Context, identityKey []byte, state omemo.TrustState) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.trust[string(identityKey)] = state
@@ -182,14 +182,14 @@ func (s *Store) SetDevices(_ context.Context, jid string, devices []omemo.Device
 	return nil
 }
 
-func (s *Store) RemoteIdentityKey(_ context.Context, dev omemo.Device) (ed25519.PublicKey, bool, error) {
+func (s *Store) RemoteIdentityKey(_ context.Context, dev omemo.Device) ([]byte, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	key, ok := s.remoteID[dev]
 	return key, ok, nil
 }
 
-func (s *Store) PutRemoteIdentityKey(_ context.Context, dev omemo.Device, key ed25519.PublicKey) error {
+func (s *Store) PutRemoteIdentityKey(_ context.Context, dev omemo.Device, key []byte) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.remoteID[dev] = key
