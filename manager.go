@@ -266,6 +266,28 @@ func (m *Manager) EncryptKeyTransport(ctx context.Context, jid string) (*Encrypt
 	return m.encrypt(ctx, jid, nil)
 }
 
+// ResetSession discards any session (good or broken) held with dev, so the
+// next message to or from it forces a brand-new session via a fresh X3DH
+// handshake against dev's currently-published bundle, instead of continuing
+// to use a session that decrypt/encrypt calls have started failing against.
+// A session going bad on our end (e.g. our own session storage was wiped)
+// isn't something the far side can detect on its own - it keeps sending
+// ordinary ratchet messages against a session we no longer recognize, which
+// DecryptMessage can only ever fail with ErrUnknownSession, forever, until
+// something forces a rebuild. Callers should follow this with
+// EncryptKeyTransport to dev's JID, so the far side also picks up the new
+// session instead of continuing to encrypt against the one just discarded.
+func (m *Manager) ResetSession(ctx context.Context, dev Device) error {
+	lock := m.deviceLock(dev)
+	lock.Lock()
+	defer lock.Unlock()
+
+	if err := m.store.DeleteSession(ctx, dev); err != nil {
+		return fmt.Errorf("reset session for %s device %d: %w", dev.JID, dev.ID, err)
+	}
+	return nil
+}
+
 // recipientDevices returns jid's known devices, plus - unless jid is
 // already the local account's own bare JID - the local account's other
 // known devices, so a sent message can be decrypted by the sender's own
