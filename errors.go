@@ -27,6 +27,15 @@ var ErrUnknownSession = errors.New("omemo: no session for sender device")
 // message carries no RecipientKey for the local device.
 var ErrOwnDeviceKeyMissing = errors.New("omemo: message has no key for this device")
 
+// ErrPreKeyNotFound is returned by DecryptMessage (via Store.ConsumePreKey)
+// when an incoming PreKeyMessage names a one-time prekey ID we don't have -
+// almost always because the sender built the session from a stale cached
+// bundle referencing an ID we already consumed and deleted (one-time
+// prekeys are exactly that: usable once). The session that message would
+// have started can never be recovered, same as ErrUnknownSession - callers
+// should treat the two the same way (heal by pushing a fresh session).
+var ErrPreKeyNotFound = errors.New("omemo: one-time prekey not found (already consumed or unknown)")
+
 // TrustResolver is consulted for a recipient device in TrustUndecided state.
 // Returning nil trusts the device for this call and persists that decision;
 // returning an error skips the device for this call without persisting
